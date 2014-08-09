@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en-us">
+    <head>
+        <meta charset="utf-8">
+        <title>Tetrisnake</title>
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        
+        <link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/css/bootstrap.min.css">
+
+        <style type="text/css">
+        
+            html {
+                height: 100%;
+            }
+            body {
+                color: #FFF;
+                background-color: #000;
+                height: 100%;
+                text-align: center;
+            }
+            
+            #matrix_container{
+                position:absolute;
+                bottom:0;
+                left:50%;
+                width:100%;
+                margin:0 auto;
+            }
+            
+            #matrix {
+                margin: 0;
+                position: relative;
+                left: -50%;
+            }
+            .matrix_cell {
+                padding: 0;
+                background-color: #000;
+            }
+            .game_block {
+                /*border: 1px solid #ccc;*/
+                position: relative;
+                width: 100%;     /* desired width */
+            }
+            .game_block:before{
+                content: "";
+                display: block;
+                padding-top: 100%;  /* initial ratio of 1:1*/
+            }
+            .filled_block {
+                background-color: #fff;
+            }
+            
+            
+            /* debug */
+            
+            .dbg_text{
+                color: #888;
+                font-size: 8px;
+                position: absolute;
+                top: 0;
+                left: 0;
+            }
+        </style>
+    </head>
+    <body>
+        
+        <div class="" id="matrix_container">
+            <div class="row" id="matrix">
+            </div>
+        </div>
+        
+        <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+        
+        <script>
+
+/* define */
+
+var FILLED_BLOCK_CLASS = 'filled_block',
+    GAME_LOOP_TIME = 34,
+    // frames: time
+    // 60: 16
+    // 30: 33
+    // 10: 100
+    SNAKE_SPEED = 60,
+    TETRIS_SPEED = 300,
+    TETRIS_SPEED_HARD = 30,
+    SPACE_KEY = 32;
+
+/* enums */
+
+var EMPTY_BLOCK = 1, // Matrix data
+    FILLED_BLOCK = 2,
+    UP_KEY = 3, // Keys for snake
+    DOWN_KEY = 4,
+    LEFT_KEY = 5,
+    RIGHT_KEY = 6;
+    
+
+/* config */
+
+var app = {
+    
+    matrix: {
+        w: 20,
+        h: 32
+    },
+    snake: {
+        startX: 1,
+        startY: 15,
+        startLength: 5
+    }
+};
+
+/* HTML caching */
+
+var $matrix = $('#matrix');
+var $matrix_container = $('#matrix_container');
+
+/* preparing the matrix */
+
+app.matrix.data = [];
+app.matrix.el = [];
+
+for (var ix = 0; ix < app.matrix.w; ix++) {
+    app.matrix.data[ix] = [];
+    app.matrix.el[ix] = [];
+    for (var iy = 0; iy < app.matrix.h; iy++) {
+        app.matrix.data[ix][iy] = EMPTY_BLOCK;
+    };
+}
+
+for (var iy = 0; iy < app.matrix.h; iy++) {
+    for (var ix = 0; ix < app.matrix.w; ix++) {
+        app.matrix.el[ix][iy] = $('<div class="col-xs-1 matrix_cell"><div class="game_block"></div></div>');
+        // app.matrix.el[ix][iy].find('.game_block').append('<div class="dbg_text">'+ix+':'+iy+'</div');
+        $matrix.append( app.matrix.el[ix][iy] );
+    };
+}
+
+app.stop = false;
+app.matrix.max = { x: app.matrix.w -1, y: app.matrix.h -1 };
+
+app.matrix.set = function ( body ) {
+    this.data[body.x][body.y] = FILLED_BLOCK;
+};
+app.gameOver = function () {
+    console.log( 'GAME OVER' );
+    app.stop = true;
+};
+app.render = function () {
+    for (var ix = 0; ix < app.matrix.w; ix++) {
+        for (var iy = 0; iy < app.matrix.h; iy++) {
+            if( app.matrix.data[ix][iy] == EMPTY_BLOCK ){
+                app.matrix.el[ix][iy].removeClass( FILLED_BLOCK_CLASS );
+            } else {
+                app.matrix.el[ix][iy].addClass( FILLED_BLOCK_CLASS );
+            }
+            app.matrix.data[ix][iy] = EMPTY_BLOCK;
+        };
+    }
+};
+
+var BaseGameObject = {
+    data: [],
+    checkCollisionWith: function ( neighbor ) {
+        for (var i = 0; i < this.data.length; i++) {
+            if( neighbor.checkCollision( this.data[i] ) ){
+                return true;
+            }
+        }
+        return false;
+    },
+    checkCollision: function ( body ) {
+        for(var i in this.data){
+            if( this.data[i].x == body.x && this.data[i].y == body.y)
+                return true;
+        }
+        return false;
+    },
+    show: function () {
+        for (var i = 0; i < this.data.length; i++) {
+            app.matrix.set( this.data[i] );
+        };
+    }
+};
+
+var Snake = {
+    
+    position: { x: app.snake.startX, y: app.snake.startY },
+    velocity: { x: 1, y: 0 },
+    lockMatrix: null,
+    fallingPieces: null,
+    size: app.snake.startLength,
+
+    // timerClass
+    timeStep: 0,
+
+    // use key queue or find last held key
+    events: function ( keys ) {
+        
+        key = keys.shift();
+        if (typeof key == "undefined") {
+            last_key_time = 0;
+            for (var i in heldKeys) {
+                if( (i in keyMap) && (heldKeys[i] > last_key_time) ){
+                    last_key_time = heldKeys[i];
+                    key = keyMap[ i ];
+                }
+            }
+        }
+        if( key == UP_KEY && this.velocity.y == 0 ){
+            this.velocity.x = 0;
+            this.velocity.y = -1;
+        }
+        if( key == DOWN_KEY && this.velocity.y == 0  ){
+            this.velocity.x = 0;
+            this.velocity.y = 1;
+        }
+        if( key == LEFT_KEY && this.velocity.x == 0  ){
+            this.velocity.x = -1;
+            this.velocity.y = 0;
+        }
+        if( key == RIGHT_KEY && this.velocity.x == 0  ){
+            this.velocity.x = 1;
+            this.velocity.y = 0;
+        }
+    },
+    move: function ( time ) {
+
+        if( time < this.timeStep ) return;
+        this.timeStep = time + SNAKE_SPEED;
+        Snake.events( keyQueue );
+        this.position.x += this.velocity.x;
+        this.position.y += this.velocity.y;
+        if( this.position.x < 0 ){
+            this.position.x = app.matrix.max.x;
+        }
+        if( this.position.x > app.matrix.max.x ){
+            this.position.x = 0;
+        }
+        if( this.position.y < 0 || this.checkCollisionWith( this.lockMatrix ) ){
+            app.gameOver();
+        }
+        if( this.checkCollisionWith( this ) ){
+            app.gameOver();
+        }
+        if( this.checkCollisionWith( this.fallingPieces ) ){
+            this.fallingPieces.remove( this.position );
+            this.size++;
+        }
+        this.data.push( { x: this.position.x, y: this.position.y } );
+        while( this.data.length > this.size ) {
+            this.data.shift();
+        }
+    },
+    // overloading because using position
+    checkCollisionWith: function ( neighbor ) {
+        if( neighbor.checkCollision( this.position ) ){
+            return true;
+        }
+        return false;
+    },
+};
+Snake = $.extend( true, {}, BaseGameObject, Snake );
+
+var FallingPiece = {
+    
+    position: { x: 0, y: 0 },
+    velocity: { x: 0, y: 1 }, // constant..
+    lockMatrix: null,
+    snake: null,
+
+    // timerClass
+    timeStep: 0,
+    timeStepHard: 0,
+
+    move: function ( time ) {
+
+        if ( SPACE_KEY in heldKeys ) {
+            if( time < this.timeStepHard ) return;
+        } else {
+            if( time < this.timeStep ) return;
+        }
+        this.timeStep = time + TETRIS_SPEED;
+        this.timeStepHard = time + TETRIS_SPEED_HARD;
+        
+        //! new piece
+        if( this.data.length == 0 ){
+            
+            this.data = $.extend(true, [], TetrisPieces[ rand( TetrisPieces.length -1 ) ]);
+            fairX = this.lockMatrix.getFairX();
+            newX = rand( app.matrix.max.x );
+            farX = 0;
+            for (var i = 0; i < this.data.length; i++) {
+                if( this.data[i].x > farX ){
+                    farX = this.data[i].x;
+                }
+            }
+            newX = fairX - rand( farX );
+            if( newX + farX > app.matrix.max.x )
+                newX = app.matrix.max.x - farX;
+            if( newX < 0 )
+                newX = 0;
+            for (var i = 0; i < this.data.length; i++) {
+                this.data[i].x += newX;
+            }
+            if( this.checkCollisionWith( this.lockMatrix ) ){
+                app.gameOver();
+            }
+            return; //! dont move new piece.
+        }
+        
+        // Move
+        this.advance();
+        
+        // collision detection
+        if( this.checkCollisionWith( this.lockMatrix ) ){ // with locked pieces
+            this.advance(-1); // go back
+            this.lock();
+        }
+        if( this.checkCollisionWith( this.snake ) ){
+            this.advance(-1); // just go back
+        }
+    },
+    advance: function ( goBack ) {
+        
+        if( typeof goBack == "undefined" ){
+            goBack = 1;
+        }
+        var vel = this.velocity.y * goBack;
+        for (var i = 0; i < this.data.length; i++) {
+            this.data[i].y += vel;
+        }
+    },
+    lock: function () {
+        
+        for (var i = 0; i < this.data.length; i++) {
+            this.lockMatrix.data.push( { x: this.data[i].x, y: this.data[i].y } );
+        }
+        this.data = [];
+        this.lockMatrix.checkLines();
+    },
+    
+    remove: function ( coordinates ) {
+        for(var i in this.data){
+            if( this.data[i].x == coordinates.x && this.data[i].y == coordinates.y){
+                this.data.splice(i, 1);
+                return;
+            }
+        }
+    }
+};
+FallingPiece = $.extend( true, {}, BaseGameObject, FallingPiece );
+
+
+var LockedPieces = {
+    
+    // find lowest free-fall point
+    getFairX: function () {
+        
+        HighYs = {};
+        for(var i in this.data){
+            if( (typeof HighYs[ this.data[i].x ] == "undefined")
+                || ( this.data[i].y < HighYs[ this.data[i].x ].y ) ){
+                HighYs[ this.data[i].x ] = this.data[i];
+            }
+        }
+        for (var i = 0; i <= app.matrix.max.x; i++) {
+            if (typeof HighYs[i] == "undefined"){
+                return i;
+            }
+        }
+        LowY = {x:0,y:0};
+        for(var i in HighYs){
+            if( HighYs[i].y > LowY.y ){
+                LowY = HighYs[i];
+            }
+        }
+        return LowY.x;
+    },
+    checkLines: function () {
+        
+        Yaxis = {};
+        for(var i in this.data){
+            if( typeof Yaxis[ this.data[i].y ] == "undefined")
+                Yaxis[this.data[i].y] = 0;
+                
+            Yaxis[this.data[i].y]++;
+        }
+        for(var y in Yaxis){
+            if( Yaxis[y] > app.matrix.max.x ){
+                this.data = $.grep(this.data, function(item) { 
+                    return item.y != y;
+                });
+                for (var j in this.data) {
+                    if( this.data[j].y < y ){
+                        this.data[j].y += 1;
+                    }
+                }
+            } 
+        }
+        
+    },
+    checkCollision: function ( body ) {
+        if( body.y > app.matrix.max.y ) return true;
+        // return this.paretn.checkCollision( body ); //! ***
+        for(var i in this.data){
+            if( this.data[i].x == body.x && this.data[i].y == body.y)
+                return true;
+        }
+        return false;
+    }
+};
+LockedPieces = $.extend( true, {}, BaseGameObject, LockedPieces );
+
+
+var heldKeys = {};
+var keyQueue = [];
+var keyMap = {
+    '87': UP_KEY,
+    '83': DOWN_KEY,
+    '65': LEFT_KEY,
+    '68': RIGHT_KEY,
+    '38': UP_KEY,
+    '40': DOWN_KEY,
+    '37': LEFT_KEY,
+    '39': RIGHT_KEY
+};
+
+$( document ).ready(function() {
+    
+    // fix cell size to fit matrix
+    $('.matrix_cell').css('width', (100 / app.matrix.w)+'%');
+    
+    // fix matrix size to fit window
+    $matrix_container.css('width', $(window).height() / app.matrix.h * app.matrix.w );
+    
+    
+    // controls
+    $(document).on( "keydown", function (event) {
+        
+        if ( event.keyCode in heldKeys ) {
+            return false;
+        }
+        if( app.stop ) return;
+        heldKeys[event.keyCode] = $.now();
+        if( event.keyCode in keyMap ){
+            keyQueue.push( keyMap[event.keyCode] );
+        }
+    });
+    
+    $(document).on( "keyup", function (event) {
+        delete heldKeys[event.keyCode];
+    });
+
+    $(window).on( "focus", function (event) {
+        app.stop = false;
+    }).on( "blur", function (event) {
+        app.stop = true;
+    });
+    
+    
+    // setup
+    
+    FallingPiece.lockMatrix = LockedPieces;
+    FallingPiece.snake = Snake;
+    
+    Snake.lockMatrix = LockedPieces;
+    Snake.fallingPieces = FallingPiece;
+    
+
+    // Game Loop
+    
+    setInterval(function(){
+        
+        if( app.stop ) return;
+
+        // # Events
+
+        // Snake.events( keyQueue );
+
+        // # Logic
+
+        now = $.now();
+
+        Snake.move( now );
+        FallingPiece.move( now );
+        
+        // # Rendering
+        
+        Snake.show();
+        FallingPiece.show();
+        LockedPieces.show();
+        
+        app.render();
+        
+    }, GAME_LOOP_TIME);
+});
+
+/*
+    I     J    L    O    S     T     Z
+
+    XXXX  X      X  XX    XX    X    XX
+          XXX  XXX  XX   XX    XXX    XX
+*/
+var TetrisPieces = [
+    
+    // I
+    [{x: 0, y: 1}, {x: 1, y: 1}, {x: 2, y: 1}, {x: 3, y: 1}],
+    [{x: 1, y: 0}, {x: 1, y: 1}, {x: 1, y: 2}, {x: 1, y: 3}],
+    [{x: 0, y: 1}, {x: 1, y: 1}, {x: 2, y: 1}, {x: 3, y: 1}],
+    [{x: 1, y: 0}, {x: 1, y: 1}, {x: 1, y: 2}, {x: 1, y: 3}],
+    
+    // J
+    [{x: 0, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}, {x: 2, y: 1}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 0, y: 1}, {x: 0, y: 2}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 2, y: 0}, {x: 2, y: 1}],
+    [{x: 1, y: 0}, {x: 1, y: 1}, {x: 1, y: 2}, {x: 0, y: 2}],
+    
+    // L
+    [{x: 0, y: 1}, {x: 1, y: 1}, {x: 2, y: 1}, {x: 2, y: 0}],
+    [{x: 0, y: 0}, {x: 0, y: 1}, {x: 0, y: 2}, {x: 1, y: 2}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 2, y: 0}, {x: 0, y: 1}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 1, y: 2}],
+    
+    // O
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    
+    // S
+    [{x: 1, y: 0}, {x: 2, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    [{x: 0, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}, {x: 1, y: 2}],
+    [{x: 1, y: 0}, {x: 2, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}],
+    [{x: 0, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}, {x: 1, y: 2}],
+    
+    // T
+    [{x: 0, y: 1}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 2, y: 1}],
+    [{x: 0, y: 0}, {x: 0, y: 1}, {x: 1, y: 1}, {x: 0, y: 2}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 2, y: 0}],
+    [{x: 0, y: 1}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 1, y: 2}],
+    
+    // Z
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 2, y: 1}],
+    [{x: 1, y: 0}, {x: 1, y: 1}, {x: 0, y: 1}, {x: 0, y: 2}],
+    [{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 2, y: 1}],
+    [{x: 1, y: 0}, {x: 1, y: 1}, {x: 0, y: 1}, {x: 0, y: 2}],
+];
+
+
+// Helper functions
+
+function rand(max, min) {
+  if (typeof min == "undefined") min = 0;
+  return Math.floor(Math.random() * (max - min)) + min;
+}
+
+
+/*
+
+    
+    Workplan:
+        
+        
+        Object inheritance
+
+
+        *timer Class,
+
+        ** relations between game objects
+
+
+
+        
+        new tetris piece every few seconds
+        v Hard drop for the oldest piece ( hold space key )
+
+
+        # Game Logic:
+
+    
+        Events: keys
+        
+        Logic:
+            
+            Timers
+            Motion
+            Collision Detection
+            Collections of Elements (tetris pieces)
+
+
+
+        # Architecture 
+        
+        new,
+        inheritance
+        
+        
+        elements -> body -> write to matrix
+            
+            body:
+                set of coordinates,
+                velocities, (delays?)
+                
+        
+            between elements relation:
+                collision detection and responce API.
+
+            game to elements relation:
+                snake dies
+                scoring
+
+            
+        frame: render from matrix to DOM, clear matrix.
+        
+        
+        
+
+    Object new?
+    Object collections? (learn from underscore?)
+    Object passing, cloning?
+
+
+*/
+
+
+
+
+
+
+
+
+
+/*
+
+## Spec:
+
+
+    ### Tetris:
+    
+        matrix: 10 x 20 (original) 
+        my:     32 x 48
+        my:     20 x 40
+        
+        blocks: 
+        
+            XXXX  X      X  XX
+                  XXX  XXX  XX
+                  
+             XX    X    XX
+            XX    XXX    XX
+
+
+        Score:
+            
+            More difficult line clears should be awarded more points.
+            Many games award a number of points based on the height 
+                that the piece fell before locking.
+            
+        
+        Rools:
+        
+            High chance for start position of next block at highest path
+                (most empty blocks from top to bottom)
+                
+            Random rotation of blocks?
+            
+            
+                     
+    ### Snake:
+    
+        Player controls snake
+        Eats falling blocks,
+        Cant eat Self,
+        Can go through left/right walls,
+        Snake is faster than tetris
+        
+    
+    
+    ### Notes:
+    
+        HUD:
+            SCORE
+            *Level
+            *Lines
+            *Show Next block
+        
+        Score system:
+        
+            Tetris scoring higher than snake eating:
+                to encourage building lines.
+                Lines disappear and make space for more scoring.
+                Also snake gets bigger till no more space and game over 
+                so final score is lower if no lines were made.
+                
+        
+          
+    Reference:
+    
+        http://img0.joyreactor.cc/pics/post/%D0%B3%D0%B8%D1%84-%D1%82%D0%B5%D1%82%D1%80%D0%B8%D1%81-%D0%98%D0%B3%D1%80%D1%8B-%D0%97%D0%BC%D0%B5%D0%B9%D0%BA%D0%B0-1422153.gif
+
+*/
+
+        </script>
+    </body>
+</html>
